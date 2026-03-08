@@ -1,28 +1,18 @@
-import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:flutter_inappwebview/flutter_inappwebview.dart';
-import 'package:permission_handler/permission_handler.dart';
-import 'package:image_picker/image_picker.dart';
-import 'package:camera/camera.dart';
-import 'package:url_launcher/url_launcher.dart';
-import 'package:flutter_image_compress/flutter_image_compress.dart' as fic;
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 final GlobalKey<ScaffoldMessengerState> messengerKey =
     GlobalKey<ScaffoldMessengerState>();
 
-List<CameraDescription> cameras = [];
-
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
-  try {
-    cameras = await availableCameras();
-  } catch (e) {
-    debugPrint('Camera init error: $e');
-  }
 
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
@@ -43,16 +33,18 @@ void main() async {
 class SimziwahApp extends StatelessWidget {
   const SimziwahApp({super.key});
 
+  static final ThemeData _theme = ThemeData.light(useMaterial3: true).copyWith(
+    scaffoldBackgroundColor: Colors.white,
+    colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF4CAF50)),
+  );
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       scaffoldMessengerKey: messengerKey,
       debugShowCheckedModeBanner: false,
       title: 'Simziwah',
-      theme: ThemeData.light(useMaterial3: true).copyWith(
-        scaffoldBackgroundColor: Colors.white,
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF4CAF50)),
-      ),
+      theme: _theme,
       home: const WebViewPage(),
     );
   }
@@ -66,47 +58,95 @@ class WebViewPage extends StatefulWidget {
 }
 
 class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
-  InAppWebViewController? webViewController;
-  DateTime? lastBackPress;
+  InAppWebViewController? _webCtrl;
+  final _picker = ImagePicker();
+  static final WebUri _homeUrl = WebUri('https://simziwah.com');
+
   bool _isPickerActive = false;
-  int _lastClickTime = 0;
+  int _lastPickerTime = 0;
+  DateTime? _lastBackPress;
+  final List<String> _navStack = [];
+  static const int _navStackMax = 50;
 
-  final ImagePicker _imagePicker = ImagePicker();
-  late final WebUri _urlUtama;
-
-  final List<String> _logicalStack = [];
-  static const int _maxStackSize = 50;
-
-  static final InAppWebViewSettings _webViewSettings = InAppWebViewSettings(
+  static final InAppWebViewSettings _webSettings = InAppWebViewSettings(
     javaScriptEnabled: true,
-    cacheEnabled: true,
     domStorageEnabled: true,
     databaseEnabled: true,
+    cacheEnabled: true,
     useHybridComposition: true,
-    hardwareAcceleration: true,
+    transparentBackground: false,
     allowFileAccessFromFileURLs: false,
     allowUniversalAccessFromFileURLs: false,
+    mixedContentMode: MixedContentMode.MIXED_CONTENT_NEVER_ALLOW,
+    safeBrowsingEnabled: true,
     thirdPartyCookiesEnabled: true,
     allowContentAccess: true,
-    safeBrowsingEnabled: true,
-    userAgent:
-        "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
-    geolocationEnabled: true,
     mediaPlaybackRequiresUserGesture: false,
-    mixedContentMode: MixedContentMode.MIXED_CONTENT_NEVER_ALLOW,
-    initialScale: 100,
-    minimumFontSize: 8,
-    loadWithOverviewMode: true,
-    useWideViewPort: true,
+    disableHorizontalScroll: false,
+    disableVerticalScroll: false,
     supportZoom: false,
     builtInZoomControls: false,
     displayZoomControls: false,
+    useWideViewPort: true,
+    loadWithOverviewMode: true,
+    initialScale: 100,
+    minimumFontSize: 8,
+    userAgent:
+        'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 '
+        '(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
   );
+
+  static const String _jsOnLoad = r"""
+  (function() {
+    // Disable zoom
+    var vp = document.querySelector('meta[name="viewport"]');
+    if (vp) {
+      vp.content = 'width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no';
+    } else {
+      var m = document.createElement('meta');
+      m.name = 'viewport';
+      m.content = 'width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no';
+      document.head.appendChild(m);
+    }
+
+    if (window._simReady) return;
+    window._simReady = true;
+
+    var busy = false;
+    document.addEventListener('click', function(e) {
+      var inp = (e.target.type === 'file') ? e.target : e.target.closest('input[type="file"]');
+      if (inp && !busy) {
+        busy = true;
+        e.preventDefault();
+        window._activeInput = inp;
+        window.flutter_inappwebview
+          .callHandler('photoPicker', inp.hasAttribute('capture'))
+          .finally(function() { setTimeout(function() { busy = false; }, 1000); });
+        return;
+      }
+
+      var target = e.target;
+      var shareBtn = target.closest('[data-share]') || target.closest('.share-btn') || 
+                     target.closest('[class*="share"]') || target.closest('a[href*="whatsapp"]') ||
+                     target.closest('a[href*="facebook"]') || target.closest('a[href*="fb:"]') ||
+                     target.closest('a[href*="instagram"]') || target.closest('a[href*="twitter"]') ||
+                     target.closest('a[href*="x.com"]') || target.closest('a[href*="wa.me"]');
+      
+      if (shareBtn) {
+        var href = shareBtn.href || shareBtn.getAttribute('data-url') || '';
+        if (href) {
+          e.preventDefault();
+          e.stopPropagation();
+          window.flutter_inappwebview.callHandler('shareSheet', href);
+        }
+      }
+    }, true);
+  })();
+  """;
 
   @override
   void initState() {
     super.initState();
-    _urlUtama = WebUri('https://simziwah.com');
     WidgetsBinding.instance.addObserver(this);
     _requestPermissions();
   }
@@ -114,24 +154,20 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    webViewController = null;
-    _logicalStack.clear();
+    _webCtrl?.dispose();
+    _navStack.clear();
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (webViewController == null) return;
-    switch (state) {
-      case AppLifecycleState.paused:
-      case AppLifecycleState.inactive:
-        webViewController!.pauseTimers();
-        break;
-      case AppLifecycleState.resumed:
-        webViewController!.resumeTimers();
-        break;
-      default:
-        break;
+    if (_webCtrl == null) return;
+    
+    if (state == AppLifecycleState.paused || 
+        state == AppLifecycleState.inactive) {
+      _webCtrl?.pauseTimers();
+    } else if (state == AppLifecycleState.resumed) {
+      _webCtrl?.resumeTimers();
     }
   }
 
@@ -143,129 +179,178 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     ].request();
   }
 
-  Future<XFile?> _compressImageForLowRam(String path) async {
-    final tempDir = Directory.systemTemp;
-    final targetPath =
-        '${tempDir.path}/${DateTime.now().millisecondsSinceEpoch}_compressed.jpg';
-
-    final result = await fic.FlutterImageCompress.compressAndGetFile(
-      path,
-      targetPath,
-      quality: 60,
-      minWidth: 800,
-      minHeight: 800,
-      format: fic.CompressFormat.jpeg,
-    );
-    return result;
-  }
-
   Future<void> _handlePhotoPicker(bool isCamera) async {
-    final currentTime = DateTime.now().millisecondsSinceEpoch;
-    if (currentTime - _lastClickTime < 1500) return;
-    _lastClickTime = currentTime;
-
-    if (_isPickerActive || !mounted) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (now - _lastPickerTime < 1500 || _isPickerActive || !mounted) return;
+    _lastPickerTime = now;
     _isPickerActive = true;
 
     try {
-      XFile? photo;
+      final XFile? photo = isCamera
+          ? await _picker.pickImage(
+              source: ImageSource.camera,
+              imageQuality: 55,
+              maxWidth: 1024,
+              maxHeight: 1024,
+              requestFullMetadata: false,
+            )
+          : await _picker.pickImage(
+              source: ImageSource.gallery,
+              imageQuality: 55,
+              maxWidth: 1024,
+              maxHeight: 1024,
+              requestFullMetadata: false,
+            );
 
-      if (isCamera && cameras.isNotEmpty) {
-        photo = await Navigator.push<XFile>(
-          context,
-          MaterialPageRoute(
-            builder: (_) => const InAppCameraScreen(),
-            fullscreenDialog: true,
-          ),
-        );
-      } else {
-        photo = await _imagePicker.pickImage(
-          source: ImageSource.gallery,
-          imageQuality: 60,
-          maxWidth: 800,
-          maxHeight: 800,
-          requestFullMetadata: false,
-        );
-      }
+      if (photo == null || _webCtrl == null || !mounted) return;
 
-      if (photo != null && webViewController != null && mounted) {
-        _showLoadingDialog();
+      _showLoadingDialog();
 
-        XFile? fileToProcess = photo;
-
+      try {
+        final b64 = await compute(_encodeBase64, photo.path);
+        final name = photo.path.split('/').last;
+        await _injectPhoto(b64, name);
+      } catch (e) {
+        debugPrint('Photo process error: $e');
+        if (mounted) _showError('Gagal memproses gambar');
+      } finally {
         try {
-          if (isCamera) {
-            final compressed = await _compressImageForLowRam(photo.path);
-            if (compressed != null) fileToProcess = compressed;
-          }
-
-          final base64Image = await compute(
-            _encodeImageToBase64,
-            fileToProcess.path,
-          );
-          final fileName = fileToProcess.path.split('/').last;
-          await _injectPhotoToWeb(base64Image, fileName);
-        } catch (e) {
-          debugPrint('Error proses gambar: $e');
-          if (mounted) _showErrorSnackbar();
-        } finally {
-          try {
-            final tempOriginal = File(photo.path);
-            if (await tempOriginal.exists()) await tempOriginal.delete();
-
-            if (fileToProcess != null && fileToProcess != photo) {
-              final tempCompressed = File(fileToProcess.path);
-              if (await tempCompressed.exists()) await tempCompressed.delete();
-            }
-          } catch (_) {}
-
-          if (mounted && Navigator.canPop(context)) {
-            Navigator.of(context).pop();
-          }
-        }
+          final f = File(photo.path);
+          if (await f.exists()) await f.delete();
+        } catch (_) {}
+        if (mounted && Navigator.canPop(context)) Navigator.pop(context);
       }
     } catch (e) {
-      debugPrint('Photo picker error: $e');
+      debugPrint('Picker error: $e');
     } finally {
       _isPickerActive = false;
     }
   }
 
-  static String _encodeImageToBase64(String imagePath) {
-    final bytes = File(imagePath).readAsBytesSync();
-    return base64Encode(bytes);
+  static String _encodeBase64(String path) =>
+      base64Encode(File(path).readAsBytesSync());
+
+  Future<void> _injectPhoto(String b64, String name) async {
+    await _webCtrl?.evaluateJavascript(source: """
+    (function() {
+      var inp = window._activeInput || document.querySelector('input[type="file"]');
+      if (!inp) return;
+      fetch('data:image/jpeg;base64,$b64')
+        .then(function(r){ return r.blob(); })
+        .then(function(blob){
+          var f = new File([blob], "$name", {type:'image/jpeg'});
+          var dt = new DataTransfer();
+          dt.items.add(f);
+          inp.files = dt.files;
+          inp.dispatchEvent(new Event('change',{bubbles:true}));
+          inp.dispatchEvent(new Event('input',{bubbles:true}));
+          window._activeInput = null;
+        });
+    })();
+    """);
   }
 
-  Future<void> _injectPhotoToWeb(String base64Image, String fileName) async {
-    if (webViewController == null) return;
+  bool _isYouTube(String url) {
+    final h = Uri.tryParse(url)?.host.toLowerCase() ?? '';
+    return h == 'youtube.com' ||
+        h == 'www.youtube.com' ||
+        h == 'm.youtube.com' ||
+        h == 'youtu.be' ||
+        h == 'music.youtube.com';
+  }
+
+  Future<void> _launchExternal(String url) async {
     try {
-      await webViewController!.evaluateJavascript(
-        source: """
-        (function() {
-          try {
-            var dataURL = 'data:image/jpeg;base64,$base64Image';
-            var fileInput = window._lastClickedFileInput || document.querySelector('input[type="file"]');
-            if (fileInput) {
-              fetch(dataURL)
-                .then(function(res) { return res.blob(); })
-                .then(function(blob) {
-                  var file = new File([blob], "$fileName", { type: "image/jpeg" });
-                  var dt = new DataTransfer();
-                  dt.items.add(file);
-                  fileInput.files = dt.files;
-                  fileInput.dispatchEvent(new Event('change', { bubbles: true }));
-                  fileInput.dispatchEvent(new Event('input', { bubbles: true }));
-                  window._lastClickedFileInput = null;
-                  dataURL = null; // Free up JS Memory
-                  blob = null; // Free up JS Memory
-                });
-            }
-          } catch(e) { console.error('InjectPhoto:', e); }
-        })();
-        """,
-      );
+      await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
     } catch (e) {
-      debugPrint('Inject error: $e');
+      debugPrint('Launch error: $e');
+    }
+  }
+
+  Future<void> _handleShareSheet(String url) async {
+    final lowerUrl = url.toLowerCase();
+    String? appUrl;
+
+    if (lowerUrl.contains('whatsapp') || lowerUrl.contains('wa.me')) {
+      appUrl = lowerUrl.contains('whatsapp.com') || lowerUrl.contains('wa.me')
+          ? url
+          : 'whatsapp://send?text=${Uri.encodeComponent(url)}';
+    } else if (lowerUrl.contains('facebook') || lowerUrl.contains('fb:')) {
+      appUrl = 'fb://facewebmodal/f?href=${Uri.encodeComponent(url)}';
+    } else if (lowerUrl.contains('instagram')) {
+      appUrl = 'instagram://web';
+    } else if (lowerUrl.contains('twitter') || lowerUrl.contains('x.com')) {
+      appUrl = 'twitter://post?text=${Uri.encodeComponent(url)}';
+    }
+
+    if (appUrl != null) {
+      final uri = Uri.parse(appUrl);
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      } else {
+        await _launchExternal(url);
+      }
+    } else {
+      await _launchExternal(url);
+    }
+  }
+
+  void _updateNavStack(String url, bool isReload) {
+    if (isReload) return;
+
+    final i = _navStack.indexOf(url);
+    if (i != -1) {
+      _navStack.removeRange(i + 1, _navStack.length);
+    } else {
+      if (_navStack.length >= _navStackMax) _navStack.removeAt(0);
+      _navStack.add(url);
+    }
+  }
+
+  Future<void> _handleBack() async {
+    if (_navStack.length <= 1) {
+      _handleExit();
+      return;
+    }
+
+    _navStack.removeLast();
+    if (_webCtrl == null) return;
+
+    final history = await _webCtrl!.getCopyBackForwardList();
+    if (history?.currentIndex == null || history?.list == null) return;
+
+    final cur = history!.currentIndex!;
+    int targetIdx = -1;
+
+    for (int i = cur - 1; i >= 0; i--) {
+      if (history.list![i].url?.toString() == _navStack.last) {
+        targetIdx = i;
+        break;
+      }
+    }
+
+    if (targetIdx != -1) {
+      await _webCtrl!.goBackOrForward(steps: targetIdx - cur);
+    } else if (await _webCtrl!.canGoBack()) {
+      await _webCtrl!.goBack();
+    }
+  }
+
+  void _handleExit() {
+    final now = DateTime.now();
+    if (_lastBackPress == null ||
+        now.difference(_lastBackPress!) > const Duration(seconds: 2)) {
+      _lastBackPress = now;
+      messengerKey.currentState
+        ?..clearSnackBars()
+        ..showSnackBar(
+          const SnackBar(
+            content: Text('Tekan sekali lagi untuk keluar'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+    } else {
+      SystemNavigator.pop();
     }
   }
 
@@ -278,197 +363,102 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     );
   }
 
-  void _showErrorSnackbar() {
-    messengerKey.currentState?.clearSnackBars();
-    messengerKey.currentState?.showSnackBar(
-      const SnackBar(
-        content: Text('Gagal memproses gambar'),
-        backgroundColor: Color(0xFFE53935),
-        behavior: SnackBarBehavior.floating,
-        duration: Duration(seconds: 3),
-      ),
-    );
-  }
-
-  bool _isYouTubeUrl(String url) {
-    final uri = Uri.tryParse(url);
-    if (uri == null) return false;
-    final host = uri.host.toLowerCase();
-    return host == 'youtube.com' ||
-        host == 'www.youtube.com' ||
-        host == 'm.youtube.com' ||
-        host == 'youtu.be' ||
-        host == 'music.youtube.com';
-  }
-
-  Future<void> _launchExternalUrl(String urlStr) async {
-    try {
-      final uri = Uri.parse(urlStr);
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-    } catch (e) {
-      debugPrint('Launch URL error: $e');
-    }
-  }
-
-  void _handleExit() {
-    final now = DateTime.now();
-    if (lastBackPress == null ||
-        now.difference(lastBackPress!) > const Duration(seconds: 2)) {
-      lastBackPress = now;
-      messengerKey.currentState?.clearSnackBars();
-      messengerKey.currentState?.showSnackBar(
-        const SnackBar(
-          content: Text('Tekan sekali lagi untuk keluar'),
-          duration: Duration(seconds: 2),
+  void _showError(String msg) {
+    messengerKey.currentState
+      ?..clearSnackBars()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(msg),
+          backgroundColor: const Color(0xFFE53935),
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 3),
         ),
       );
-      return;
-    }
-    SystemNavigator.pop();
   }
 
   @override
   Widget build(BuildContext context) {
     return PopScope(
       canPop: false,
-      onPopInvokedWithResult: (didPop, result) async {
-        if (didPop) return;
-
-        if (_logicalStack.length > 1) {
-          _logicalStack.removeLast();
-          final targetUrl = _logicalStack.last;
-
-          if (webViewController == null) return;
-
-          final history = await webViewController!.getCopyBackForwardList();
-          if (history?.currentIndex == null || history?.list == null) return;
-
-          final currentIndex = history!.currentIndex!;
-          int targetIndex = -1;
-
-          for (int i = currentIndex - 1; i >= 0; i--) {
-            if (history.list![i].url?.toString() == targetUrl) {
-              targetIndex = i;
-              break;
-            }
-          }
-
-          if (targetIndex != -1) {
-            await webViewController!.goBackOrForward(
-              steps: targetIndex - currentIndex,
-            );
-          } else {
-            if (await webViewController!.canGoBack()) {
-              await webViewController!.goBack();
-            }
-          }
-        } else {
-          _handleExit();
-        }
+      onPopInvokedWithResult: (didPop, _) async {
+        if (!didPop) await _handleBack();
       },
       child: Scaffold(
         backgroundColor: Colors.white,
         resizeToAvoidBottomInset: true,
         body: SafeArea(
           child: InAppWebView(
-            initialUrlRequest: URLRequest(url: _urlUtama),
-            initialSettings: _webViewSettings,
-            onWebViewCreated: (controller) {
-              webViewController = controller;
-              controller.addJavaScriptHandler(
-                handlerName: 'photoPickerHandler',
+            initialUrlRequest: URLRequest(url: _homeUrl),
+            initialSettings: _webSettings,
+
+            onWebViewCreated: (ctrl) {
+              _webCtrl = ctrl;
+              ctrl.addJavaScriptHandler(
+                handlerName: 'photoPicker',
                 callback: (args) async {
                   await _handlePhotoPicker(args.isNotEmpty && args[0] == true);
-                  return null;
+                },
+              );
+              ctrl.addJavaScriptHandler(
+                handlerName: 'shareSheet',
+                callback: (args) async {
+                  if (args.isNotEmpty) {
+                    await _handleShareSheet(args[0].toString());
+                  }
                 },
               );
             },
-            onUpdateVisitedHistory: (controller, url, isReload) {
-              if (url == null || isReload == true) return;
-              final urlStr = url.toString();
-              final existingIndex = _logicalStack.indexOf(urlStr);
 
-              if (existingIndex != -1) {
-                _logicalStack.removeRange(
-                  existingIndex + 1,
-                  _logicalStack.length,
-                );
-              } else {
-                if (_logicalStack.length >= _maxStackSize) {
-                  _logicalStack.removeAt(0);
-                }
-                _logicalStack.add(urlStr);
+            onUpdateVisitedHistory: (_, url, isReload) {
+              if (url != null) {
+                _updateNavStack(url.toString(), isReload ?? false);
               }
             },
-            onLoadStop: (controller, url) async {
-              await controller.evaluateJavascript(
-                source: """
-                (function() {
-                  var meta = document.querySelector('meta[name="viewport"]');
-                  if (meta) {
-                    meta.setAttribute('content',
-                      'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no');
-                  } else {
-                    var m = document.createElement('meta');
-                    m.name = 'viewport';
-                    m.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no';
-                    document.head.appendChild(m);
-                  }
 
-                  if (window._simHandlerReady) return;
-                  window._simHandlerReady = true;
+            onLoadStop: (ctrl, _) => ctrl.evaluateJavascript(source: _jsOnLoad),
 
-                  var isHandling = false;
-                  document.addEventListener('click', function(e) {
-                    var target = e.target;
-                    var input = (target.tagName === 'INPUT' && target.type === 'file')
-                      ? target
-                      : target.closest('input[type="file"]');
+            shouldOverrideUrlLoading: (_, action) async {
+              final url = action.request.url?.toString() ?? '';
+              final lowerUrl = url.toLowerCase();
 
-                    if (!input) return;
-                    if (isHandling) return;
+              if (_isYouTube(url)) {
+                await _launchExternal(url);
+                return NavigationActionPolicy.CANCEL;
+              }
 
-                    isHandling = true;
-                    e.preventDefault();
-                    window._lastClickedFileInput = input;
-
-                    window.flutter_inappwebview
-                      .callHandler('photoPickerHandler', input.hasAttribute('capture'))
-                      .finally(function() {
-                        setTimeout(function() { isHandling = false; }, 1000);
-                      });
-                  }, true);
-                })();
-                """,
-              );
-            },
-            onGeolocationPermissionsShowPrompt: (controller, origin) async {
-              return GeolocationPermissionShowPromptResponse(
-                origin: origin,
-                allow: true,
-                retain: true,
-              );
-            },
-            onPermissionRequest: (controller, request) async {
-              return PermissionResponse(
-                resources: request.resources,
-                action: PermissionResponseAction.GRANT,
-              );
-            },
-            shouldOverrideUrlLoading: (controller, navigationAction) async {
-              final url = navigationAction.request.url;
-              if (url == null) return NavigationActionPolicy.ALLOW;
-
-              final urlStr = url.toString();
-
-              if (_isYouTubeUrl(urlStr)) {
-                await _launchExternalUrl(urlStr);
+              if (lowerUrl.contains('whatsapp') ||
+                  lowerUrl.contains('wa.me') ||
+                  lowerUrl.contains('fb:') ||
+                  lowerUrl.contains('facebook') ||
+                  lowerUrl.contains('instagram') ||
+                  lowerUrl.contains('twitter') ||
+                  lowerUrl.contains('x.com') ||
+                  url.startsWith('whatsapp://') ||
+                  url.startsWith('fb://') ||
+                  url.startsWith('instagram://') ||
+                  url.startsWith('twitter://') ||
+                  url.startsWith('tg://')) {
+                await _handleShareSheet(url);
                 return NavigationActionPolicy.CANCEL;
               }
 
               return NavigationActionPolicy.ALLOW;
             },
-            onConsoleMessage: (controller, consoleMessage) {},
+
+            onGeolocationPermissionsShowPrompt:
+                (_, origin) async => GeolocationPermissionShowPromptResponse(
+                  origin: origin,
+                  allow: true,
+                  retain: true,
+                ),
+
+            onPermissionRequest:
+                (_, req) async => PermissionResponse(
+                  resources: req.resources,
+                  action: PermissionResponseAction.GRANT,
+                ),
+
+            onConsoleMessage: (_, __) {},
           ),
         ),
       ),
@@ -515,252 +505,6 @@ class _LoadingDialog extends StatelessWidget {
             ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-class InAppCameraScreen extends StatefulWidget {
-  const InAppCameraScreen({super.key});
-
-  @override
-  State<InAppCameraScreen> createState() => _InAppCameraScreenState();
-}
-
-class _InAppCameraScreenState extends State<InAppCameraScreen> {
-  CameraController? _controller;
-  bool _isProcessing = false;
-  bool _isFlashOn = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _initCamera();
-  }
-
-  Future<void> _initCamera() async {
-    if (cameras.isEmpty) return;
-
-    final camera = cameras.firstWhere(
-      (c) => c.lensDirection == CameraLensDirection.back,
-      orElse: () => cameras.first,
-    );
-
-    _controller = CameraController(
-      camera,
-      ResolutionPreset.medium,
-      enableAudio: false,
-      imageFormatGroup: ImageFormatGroup.jpeg,
-    );
-
-    try {
-      await _controller!.initialize();
-      if (mounted) setState(() {});
-    } catch (e) {
-      debugPrint('Camera init error: $e');
-      if (mounted) Navigator.pop(context);
-    }
-  }
-
-  void _toggleFlash() {
-    if (_controller == null) return;
-    setState(() => _isFlashOn = !_isFlashOn);
-    _controller!.setFlashMode(_isFlashOn ? FlashMode.torch : FlashMode.off);
-  }
-
-  Future<void> _takePicture() async {
-    if (_controller == null ||
-        !_controller!.value.isInitialized ||
-        _isProcessing) {
-      return;
-    }
-
-    try {
-      setState(() => _isProcessing = true);
-
-      if (_isFlashOn) await _controller!.setFlashMode(FlashMode.off);
-
-      final XFile image = await _controller!.takePicture();
-
-      if (_isFlashOn) setState(() => _isFlashOn = false);
-      if (!mounted) return;
-
-      final result = await Navigator.push<String?>(
-        context,
-        MaterialPageRoute(
-          builder: (_) => ImagePreviewScreen(imagePath: image.path),
-          fullscreenDialog: true,
-        ),
-      );
-
-      if (!mounted) return;
-
-      if (result != null) {
-        Navigator.pop(context, XFile(result));
-      } else {
-        setState(() => _isProcessing = false);
-      }
-    } catch (e) {
-      debugPrint('Take picture error: $e');
-      if (mounted) setState(() => _isProcessing = false);
-    }
-  }
-
-  @override
-  void dispose() {
-    _controller?.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (_controller == null || !_controller!.value.isInitialized) {
-      return const Scaffold(
-        backgroundColor: Colors.black,
-        body: Center(
-          child: CircularProgressIndicator(color: Color(0xFF4CAF50)),
-        ),
-      );
-    }
-
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
-          CameraPreview(_controller!),
-          Positioned(
-            top: 0,
-            left: 0,
-            right: 0,
-            child: Container(
-              padding: EdgeInsets.only(
-                top: MediaQuery.of(context).padding.top + 10,
-                bottom: 10,
-                left: 20,
-                right: 20,
-              ),
-              color: const Color(0x4D000000),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  IconButton(
-                    icon: const Icon(
-                      Icons.close,
-                      color: Colors.white,
-                      size: 28,
-                    ),
-                    onPressed: () => Navigator.pop(context),
-                  ),
-                  IconButton(
-                    icon: Icon(
-                      _isFlashOn ? Icons.flash_on : Icons.flash_off,
-                      color: _isFlashOn ? Colors.yellow : Colors.white,
-                      size: 28,
-                    ),
-                    onPressed: _toggleFlash,
-                  ),
-                ],
-              ),
-            ),
-          ),
-          Positioned(
-            bottom: 0,
-            left: 0,
-            right: 0,
-            child: Container(
-              padding: EdgeInsets.only(
-                bottom: MediaQuery.of(context).padding.bottom + 30,
-                top: 30,
-              ),
-              color: const Color(0x66000000),
-              child: Center(
-                child: GestureDetector(
-                  onTap: _takePicture,
-                  child: Container(
-                    height: 80,
-                    width: 80,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      border: Border.all(color: Colors.white, width: 4),
-                    ),
-                    child: Container(
-                      margin: const EdgeInsets.all(4),
-                      decoration: const BoxDecoration(
-                        color: Colors.white,
-                        shape: BoxShape.circle,
-                      ),
-                      child:
-                          _isProcessing
-                              ? const CircularProgressIndicator(
-                                color: Color(0xFF4CAF50),
-                              )
-                              : null,
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class ImagePreviewScreen extends StatelessWidget {
-  final String imagePath;
-  const ImagePreviewScreen({super.key, required this.imagePath});
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
-          Image.file(
-            File(imagePath),
-            fit: BoxFit.contain,
-            cacheWidth: 800,
-          ),
-          Positioned(
-            bottom: 30,
-            left: 0,
-            right: 0,
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                ElevatedButton.icon(
-                  onPressed: () => Navigator.pop(context),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.white,
-                    foregroundColor: Colors.black,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 24,
-                      vertical: 12,
-                    ),
-                  ),
-                  icon: const Icon(Icons.refresh),
-                  label: const Text('Ulangi'),
-                ),
-                ElevatedButton.icon(
-                  onPressed: () => Navigator.pop(context, imagePath),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF4CAF50),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 24,
-                      vertical: 12,
-                    ),
-                  ),
-                  icon: const Icon(Icons.check),
-                  label: const Text('Gunakan'),
-                ),
-              ],
-            ),
-          ),
-        ],
       ),
     );
   }

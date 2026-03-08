@@ -1,7 +1,6 @@
 plugins {
     id("com.android.application")
     id("kotlin-android")
-    // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
 
@@ -21,13 +20,11 @@ android {
 
     defaultConfig {
         applicationId = "com.baitulmal.simziwahapp"
-        minSdk = 23
+        minSdk = 21
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
-        
-        // Memory optimization untuk low-end devices
-        manifestPlaceholders["largeHeap"] = "false"
+        multiDexEnabled = true
     }
 
     buildTypes {
@@ -40,21 +37,17 @@ android {
                 "proguard-rules.pro"
             )
         }
-        
         debug {
             isMinifyEnabled = false
         }
     }
     
-    // Bundle configuration - disable minify untuk split-per-abi
-    // (split APK sudah optimal tanpa minification)
     bundle {
         language {
             enableSplit = false
         }
     }
     
-    // Remove unused resources
     packagingOptions {
         exclude("META-INF/**")
         exclude("com/google/**")
